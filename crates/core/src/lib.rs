@@ -56,8 +56,8 @@ use player::Player;
 // don't pub anything else from core so that dead code lints still work
 pub use state::{AppState, State};
 use state::{
-  AudioManager, DeviceStore, KvStore, MetaStore, RouteTable, StateAssembly, TelephonyManager, TimeManager, WebappBlobs,
-  WebappRegistry,
+  AudioManager, DeviceStore, KvStore, MetaStore, PresenceManager, RouteTable, StateAssembly, TelephonyManager,
+  TimeManager, WebappBlobs, WebappRegistry,
 };
 pub use systemd::power::{ResetRig, ResetSupport, RigError};
 use systemd::{
@@ -69,6 +69,7 @@ use transfer::ChunkedTransfer;
 use transport::TransportController;
 
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
+const PRESENCE_SETTINGS_FILE: &str = "presence.json";
 
 pub struct Daemon {
   pub state: State,
@@ -271,6 +272,15 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     .await
     .expect("failed to initialize ALS manager")
     .spawn();
+  let (presence, presence_handle) = PresenceManager::init(
+    bus.clone(),
+    als.clone(),
+    config
+      .state_dir
+      .clone()
+      .unwrap_or_else(paths::state_dir)
+      .join(PRESENCE_SETTINGS_FILE),
+  );
   let (mic, mic_handle) = MicManager::init(bus.clone(), bluetooth.clone(), MicConfig::default())
     .await
     .spawn();
@@ -359,6 +369,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     time,
     audio,
     als,
+    presence,
     mic,
     devices,
     kv,
@@ -374,6 +385,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     asset_cache_handle,
     transfer_handle,
     als_handle,
+    presence_handle,
     mic_handle,
   });
 

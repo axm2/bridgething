@@ -29,6 +29,7 @@ pub mod log_tap;
 mod lyrics;
 pub mod meta;
 mod playback_targets;
+mod presence;
 mod root_browse;
 pub mod routes;
 pub mod storage;
@@ -44,6 +45,7 @@ pub use geo_watchers::{GeoLastFix, GeoWatchers, WatchAggregate, WatchChange};
 pub use log_tap::{LogTap, LogTapLayer};
 pub use lyrics::LyricsCache;
 pub use playback_targets::{PlaybackTargetError, PlaybackTargetStore};
+pub use presence::PresenceManager;
 pub use root_browse::RootBrowseCache;
 pub use routes::RouteTable;
 pub use storage::{DeviceStore, KvStore, MetaStore, SlotsReleased};
@@ -77,6 +79,7 @@ pub struct AppState {
   pub time: TimeManager,
   pub audio: AudioManager,
   pub als: AlsManager,
+  pub presence: PresenceManager,
   pub mic: MicManager,
   pub devices: DeviceStore,
   pub kv: KvStore,
@@ -100,6 +103,7 @@ pub struct AppState {
   _asset_cache_handle: JoinHandle<()>,
   _transfer_handle: JoinHandle<()>,
   _als_handle: JoinHandle<()>,
+  _presence_handle: JoinHandle<()>,
   _mic_handle: JoinHandle<()>,
 }
 
@@ -125,6 +129,7 @@ impl AppState {
       time,
       audio,
       als,
+      presence,
       mic,
       devices,
       kv,
@@ -141,6 +146,7 @@ impl AppState {
       asset_cache_handle,
       transfer_handle,
       als_handle,
+      presence_handle,
       mic_handle,
     } = parts;
     Arc::new(Self {
@@ -162,6 +168,7 @@ impl AppState {
       time,
       audio,
       als,
+      presence,
       mic,
       devices,
       kv,
@@ -183,6 +190,7 @@ impl AppState {
       _asset_cache_handle: asset_cache_handle,
       _transfer_handle: transfer_handle,
       _als_handle: als_handle,
+      _presence_handle: presence_handle,
       _mic_handle: mic_handle,
     })
   }
@@ -353,6 +361,7 @@ pub struct StateAssembly {
   pub time: TimeManager,
   pub audio: AudioManager,
   pub als: AlsManager,
+  pub presence: PresenceManager,
   pub mic: MicManager,
   pub devices: DeviceStore,
   pub kv: KvStore,
@@ -369,6 +378,7 @@ pub struct StateAssembly {
   pub asset_cache_handle: JoinHandle<()>,
   pub transfer_handle: JoinHandle<()>,
   pub als_handle: JoinHandle<()>,
+  pub presence_handle: JoinHandle<()>,
   pub mic_handle: JoinHandle<()>,
 }
 

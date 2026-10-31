@@ -226,6 +226,11 @@ export type Diagnostics = {
 export type DismissReason = 'userDismissed' | 'acted' | 'remoteDismissed';
 
 /**
+ * How lit the device screen should be. The host maps its own display and idle state onto this.
+ */
+export type DisplayState = 'active' | 'dim' | 'off';
+
+/**
  * Both the webapp and the companion app write it, and the last write wins. Values are strings.
  */
 export type DocEntry = { key: string; value: string };
@@ -297,6 +302,28 @@ export type HardwareState = {
    * 0 to 100.
    */
   ambientLevel: number;
+};
+
+/**
+ * What a connected host says about its own display, so the device screen can follow it.
+ *
+ * The device acts on `display` only when `PresenceSettings.followHost` is on, and ignores it
+ * otherwise. A host counts as connected while its reports keep coming: with `heartbeatS` set, after
+ * three missed reports the device treats the host as gone and the idle timers take over, and a
+ * report without `heartbeatS` never expires. `idleS` counts as activity for the idle timers whether
+ * or not the device follows the host.
+ */
+export type HostPresence = {
+  display: DisplayState;
+  /**
+   * Seconds since the host user last touched an input device.
+   */
+  idleS: number | null;
+  /**
+   * Seconds until the host reports again. The device treats the host as gone after three missed
+   * reports. Omit it for a one-off report that does not expire.
+   */
+  heartbeatS: number | null;
 };
 
 export type HttpHeader = { name: string; value: string };
@@ -919,6 +946,47 @@ export type Position = {
    */
   tsUnixS: number;
 };
+
+export type PresenceInfo = { display: DisplayState; source: PresenceSource };
+
+/**
+ * What the user wants the screen to do. The default leaves the screen to the brightness mode, as it
+ * was before presence existed.
+ *
+ * `followHost` sleeps and wakes the screen with the host display while a host is connected. The idle
+ * timers dim and sleep it when it is not following, and also when it is following but no host is
+ * connected, so a host that is off or unplugged falls back to the timers. An idle timer counts
+ * activity on the device (buttons, dial, touch) and, when a host reports one, on the host.
+ */
+export type PresenceSettings = {
+  /**
+   * Sleep and wake with the host display. A host that dims its display dims this one. With no host
+   * connected the idle timers apply instead.
+   */
+  followHost: boolean;
+  /**
+   * Idle seconds before the screen dims, 5 to 86400. Null never dims it.
+   */
+  dimAfterS: number | null;
+  /**
+   * Idle seconds before the screen sleeps, 5 to 86400, and later than `dimAfterS`. Null never
+   * sleeps it.
+   */
+  sleepAfterS: number | null;
+  /**
+   * How far a dimmed screen drops, `0.05` to `1.0`. With manual brightness it is the highest level
+   * a dimmed screen shows, and a screen already dimmer stays put. With ambient brightness it
+   * scales whatever the light sensor asks for.
+   */
+  dimLevel: number;
+};
+
+export type PresenceSettingsError = 'dimNotBeforeSleep' | 'timerOutOfRange' | 'dimLevelOutOfRange';
+
+/**
+ * Why the device screen is in its current state.
+ */
+export type PresenceSource = 'none' | 'host' | 'localWake' | 'timer';
 
 export type Priority = 'normal' | 'bulk' | 'background';
 
