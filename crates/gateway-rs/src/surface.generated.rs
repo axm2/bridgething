@@ -80,6 +80,10 @@ impl Gateway {
   pub fn chrome(&self) -> ChromeSurface<'_> {
     ChromeSurface(self)
   }
+  /// The `Presence` surface.
+  pub fn presence(&self) -> PresenceSurface<'_> {
+    PresenceSurface(self)
+  }
   /// The `Time` surface.
   pub fn time(&self) -> TimeSurface<'_> {
     TimeSurface(self)
@@ -304,6 +308,12 @@ impl<'a> SystemSurface<'a> {
     self
       .0
       .command(GatewayToBridgeSystemMsgCommand::LogsUnsubscribe(payload))
+      .await
+  }
+  pub async fn logs_set_verbosity(&self, payload: LogsSetVerbosity) -> Result<(), SdkError> {
+    self
+      .0
+      .command(GatewayToBridgeSystemMsgCommand::LogsSetVerbosity(payload))
       .await
   }
   pub async fn ota_begin(&self, request: OtaBegin) -> Result<OtaBeginAck, RequestFailure<OtaBeginRejected>> {
@@ -573,6 +583,15 @@ pub struct ChromeSurface<'a>(&'a Gateway);
 impl<'a> ChromeSurface<'a> {
   pub async fn navigate(&self, payload: ChromeNavigate) -> Result<(), SdkError> {
     self.0.command(GatewayToBridgeChromeMsgCommand::Navigate(payload)).await
+  }
+}
+
+/// Methods scoped to the `Presence` wire surface.
+pub struct PresenceSurface<'a>(&'a Gateway);
+
+impl<'a> PresenceSurface<'a> {
+  pub async fn update(&self, payload: HostPresence) -> Result<(), SdkError> {
+    self.0.event(GatewayToBridgePresenceMsgEvent::Update(payload)).await
   }
 }
 

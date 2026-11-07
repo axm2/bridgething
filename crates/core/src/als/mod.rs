@@ -98,6 +98,13 @@ pub enum AlsError {
   Closed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Screen {
+  Full,
+  Dim(f32),
+  Off,
+}
+
 #[derive(Debug)]
 struct Inner {
   config: AlsConfig,
@@ -106,6 +113,8 @@ struct Inner {
   samples: VecDeque<u32>,
   current_ticks: u32,
   max_brightness: u32,
+  screen: Screen,
+  normal_ticks: u32,
 }
 
 impl Inner {
@@ -121,6 +130,34 @@ impl Inner {
       samples: VecDeque::with_capacity(cap),
       current_ticks,
       max_brightness,
+      screen: Screen::Full,
+      normal_ticks: current_ticks,
+    }
+  }
+
+  fn normal_now(&self) -> u32 {
+    match self.mode {
+      BrightnessMode::Manual => self.level_to_ticks(self.manual_level),
+      BrightnessMode::Auto => self
+        .median()
+        .map(|m| self.target_for_raw(m))
+        .unwrap_or(self.normal_ticks),
+    }
+  }
+
+  fn limit(&self, normal: u32) -> u32 {
+    self.limit_as(self.mode, normal)
+  }
+
+  fn limit_as(&self, mode: BrightnessMode, normal: u32) -> u32 {
+    match self.screen {
+      Screen::Full => normal,
+      Screen::Off => 0,
+      Screen::Dim(_) if normal == 0 => 0,
+      Screen::Dim(level) => match mode {
+        BrightnessMode::Auto => ((normal as f32 * level + 0.5) as u32).max(1),
+        BrightnessMode::Manual => normal.min(self.level_to_ticks(level)).max(1),
+      },
     }
   }
 
@@ -205,6 +242,7 @@ fn ease_step(current: u32, target: u32, ease_pct: f32) -> u32 {
 enum Cmd {
   SetMode(BrightnessMode, oneshot::Sender<Result<(), AlsError>>),
   SetLevel(f32, oneshot::Sender<Result<Result<(), HardwareError>, AlsError>>),
+  ApplyScreen(Screen),
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +332,14 @@ impl AlsManager {
     reply_rx.await.map_err(|_| AlsError::Closed)?
   }
 
+  pub async fn set_screen(&self, screen: Screen) -> Result<(), AlsError> {
+    self
+      .tx
+      .send(Cmd::ApplyScreen(screen))
+      .await
+      .map_err(|_| AlsError::Closed)
+  }
+
   pub async fn set_level(&self, level: f32) -> Result<Result<(), HardwareError>, AlsError> {
     let (reply_tx, reply_rx) = oneshot::channel();
     self
@@ -346,21 +392,21 @@ async fn run_loop(mut rx: mpsc::Receiver<Cmd>, inner: Arc<RwLock<Inner>>, bus: W
 async fn handle_cmd(cmd: Cmd, inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) {
   match cmd {
     Cmd::SetMode(mode, reply) => {
-      let (write_ticks, dir) = {
+      let (normal, write_ticks, dir) = {
         let guard = inner.read().await;
         if guard.mode == mode {
           let _ = reply.send(Ok(()));
           return;
         }
-        let ticks = if mode == BrightnessMode::Manual {
+        let normal = if mode == BrightnessMode::Manual {
           guard.level_to_ticks(guard.manual_level)
         } else {
           guard
             .median()
             .map(|m| guard.target_for_raw(m))
-            .unwrap_or(guard.current_ticks)
+            .unwrap_or(guard.normal_ticks)
         };
-        (ticks, guard.config.backlight_dir.clone())
+        (normal, guard.limit_as(mode, normal), guard.config.backlight_dir.clone())
       };
       if let Err(err) = write_brightness(&dir, write_ticks).await {
         tracing::error!(dir = %dir.display(), ticks = write_ticks, "als: backlight write failed: {err}");
@@ -370,6 +416,7 @@ async fn handle_cmd(cmd: Cmd, inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) {
       let (prefs_path, prefs, brightness) = {
         let mut guard = inner.write().await;
         guard.mode = mode;
+        guard.normal_ticks = normal;
         guard.current_ticks = write_ticks;
         let prefs = BrightnessPrefs {
           mode: guard.mode,
@@ -389,7 +436,8 @@ async fn handle_cmd(cmd: Cmd, inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) {
       let (mismatch, write_ticks, dir) = {
         let guard = inner.read().await;
         let mismatch = guard.mode != BrightnessMode::Manual;
-        let ticks = (!mismatch).then(|| guard.level_to_ticks(level));
+        let normal = guard.level_to_ticks(level);
+        let ticks = (!mismatch).then(|| guard.limit(normal));
         (mismatch, ticks, guard.config.backlight_dir.clone())
       };
       if let Some(ticks) = write_ticks
@@ -403,6 +451,7 @@ async fn handle_cmd(cmd: Cmd, inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) {
         let mut guard = inner.write().await;
         guard.manual_level = level;
         if let Some(ticks) = write_ticks {
+          guard.normal_ticks = guard.level_to_ticks(level);
           guard.current_ticks = ticks;
         }
         let prefs = BrightnessPrefs {
@@ -420,15 +469,29 @@ async fn handle_cmd(cmd: Cmd, inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) {
       let _ = reply.send(Ok(outcome));
       broadcast(bus, BridgeToClientHardwareMsg::BrightnessChanged(brightness)).await;
     }
+    Cmd::ApplyScreen(screen) => {
+      let (ticks, restore, dir) = {
+        let mut guard = inner.write().await;
+        guard.screen = screen;
+        let ticks = guard.limit(guard.normal_now());
+        (ticks, ticks > guard.current_ticks, guard.config.backlight_dir.clone())
+      };
+      tracing::debug!(?screen, ticks, "als: screen state changed");
+      if restore && let Ok(()) = write_brightness(&dir, ticks).await {
+        let brightness = {
+          let mut guard = inner.write().await;
+          guard.current_ticks = ticks;
+          guard.snapshot().brightness
+        };
+        broadcast(bus, BridgeToClientHardwareMsg::BrightnessChanged(brightness)).await;
+      }
+    }
   }
 }
 
 async fn poll_once(inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) -> Result<(), AlsError> {
   let als_path = inner.read().await.config.als_path.clone();
-  let sample = match read_raw(&als_path).await {
-    Ok(v) => v,
-    Err(_) => return Ok(()),
-  };
+  let sample = read_raw(&als_path).await.ok();
   if inner.read().await.max_brightness == 0 {
     let dir = inner.read().await.config.backlight_dir.clone();
     let max = read_max_brightness(&dir).await?;
@@ -448,19 +511,21 @@ async fn poll_once(inner: &Arc<RwLock<Inner>>, bus: &WireEventBus) -> Result<(),
 
   let (ticks_to_write, dir, prev_level) = {
     let mut guard = inner.write().await;
-    guard.push_sample(sample);
+    if let Some(sample) = sample {
+      guard.push_sample(sample);
+    }
     let prev_level = guard.ambient_level();
 
-    let mut ticks_to_write: Option<u32> = None;
-    if guard.mode == BrightnessMode::Auto
-      && let Some(m) = guard.median()
-    {
-      let target = guard.target_for_raw(m);
-      let next = ease_step(guard.current_ticks, target, guard.config.ease_pct);
-      if next != guard.current_ticks {
-        ticks_to_write = Some(next);
-      }
-    }
+    let normal = guard.normal_now();
+    guard.normal_ticks = normal;
+    let target = guard.limit(normal);
+    let ease = if guard.screen == Screen::Full {
+      guard.config.ease_pct
+    } else {
+      0.4
+    };
+    let next = ease_step(guard.current_ticks, target, ease);
+    let ticks_to_write = (next != guard.current_ticks).then_some(next);
 
     (ticks_to_write, guard.config.backlight_dir.clone(), prev_level)
   };
@@ -662,5 +727,181 @@ mod tests {
       .trim()
       .to_string();
     assert_eq!(panel, "107", "the panel itself is restored to the manual level");
+  }
+
+  fn backlight_at(root: &Path, ticks: u32) -> PathBuf {
+    let backlight = root.join("backlight");
+    std::fs::create_dir_all(&backlight).expect("scratch backlight");
+    std::fs::write(backlight.join("max_brightness"), "255\n").expect("max_brightness");
+    std::fs::write(backlight.join("actual_brightness"), format!("{ticks}\n")).expect("actual_brightness");
+    std::fs::write(backlight.join("brightness"), format!("{ticks}\n")).expect("brightness");
+    backlight
+  }
+
+  fn panel(backlight: &Path) -> u32 {
+    std::fs::read_to_string(backlight.join("brightness"))
+      .expect("panel brightness")
+      .trim()
+      .parse()
+      .expect("numeric brightness")
+  }
+
+  async fn settles_at(backlight: &Path, ticks: u32) -> bool {
+    for _ in 0..200 {
+      if panel(backlight) == ticks {
+        return true;
+      }
+      tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+  }
+
+  async fn polling_manager_at(root: &Path) -> (AlsManager, JoinHandle<()>) {
+    let (client_man, _listener) = crate::net::create_client_manager();
+    let config = AlsConfig {
+      poll_interval: Duration::from_millis(10),
+      als_path: root.join("in_intensity0_raw"),
+      backlight_dir: root.join("backlight"),
+      prefs_path: root.join("als.json"),
+      ..Default::default()
+    };
+    AlsManager::init(WireEventBus::new(client_man), config)
+      .await
+      .expect("als init")
+      .spawn()
+  }
+
+  #[tokio::test]
+  async fn an_off_screen_goes_dark_and_waking_it_restores_the_chosen_level() {
+    let root = scratch("als-test-screen-restore");
+    let backlight = backlight_at(&root, 255);
+    let (manager, _rig) = polling_manager_at(&root).await;
+    manager.set_mode(BrightnessMode::Manual).await.expect("mode switch");
+    manager
+      .set_level(0.5)
+      .await
+      .expect("level write")
+      .expect("manual level");
+    assert_eq!(panel(&backlight), 128);
+
+    manager.set_screen(Screen::Off).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 0).await,
+      "the panel goes dark: {}",
+      panel(&backlight)
+    );
+    let held = manager.snapshot().await.brightness;
+    assert_eq!(held.mode, BrightnessMode::Manual);
+    assert!(
+      (held.level - 0.5).abs() < f32::EPSILON,
+      "sleeping does not rewrite the chosen level"
+    );
+
+    manager.set_screen(Screen::Full).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 128).await,
+      "the panel returns to the chosen level: {}",
+      panel(&backlight)
+    );
+  }
+
+  #[tokio::test]
+  async fn a_level_chosen_while_asleep_applies_on_waking() {
+    let root = scratch("als-test-screen-level");
+    let backlight = backlight_at(&root, 255);
+    let (manager, _rig) = polling_manager_at(&root).await;
+    manager.set_mode(BrightnessMode::Manual).await.expect("mode switch");
+    manager.set_screen(Screen::Off).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 0).await,
+      "the panel goes dark: {}",
+      panel(&backlight)
+    );
+
+    manager
+      .set_level(0.9)
+      .await
+      .expect("level write")
+      .expect("manual level");
+    assert_eq!(panel(&backlight), 0, "a level change cannot light a sleeping panel");
+
+    manager.set_screen(Screen::Full).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 230).await,
+      "the new level applies on waking: {}",
+      panel(&backlight)
+    );
+  }
+
+  #[tokio::test]
+  async fn a_dimmed_manual_screen_never_gets_brighter_than_the_dim_level() {
+    let root = scratch("als-test-dim-manual");
+    let backlight = backlight_at(&root, 255);
+    let (manager, _rig) = polling_manager_at(&root).await;
+    manager.set_mode(BrightnessMode::Manual).await.expect("mode switch");
+    manager
+      .set_level(0.8)
+      .await
+      .expect("level write")
+      .expect("manual level");
+    assert_eq!(panel(&backlight), 204);
+
+    manager.set_screen(Screen::Dim(0.25)).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 64).await,
+      "dimmed to the ceiling: {}",
+      panel(&backlight)
+    );
+
+    manager
+      .set_level(0.1)
+      .await
+      .expect("level write")
+      .expect("manual level");
+    assert!(
+      settles_at(&backlight, 26).await,
+      "a screen already dimmer stays put: {}",
+      panel(&backlight)
+    );
+    manager.set_screen(Screen::Full).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 26).await,
+      "waking leaves a dim level alone: {}",
+      panel(&backlight)
+    );
+  }
+
+  #[tokio::test]
+  async fn a_dimmed_ambient_screen_scales_what_the_sensor_asks_for() {
+    let root = scratch("als-test-dim-auto");
+    let backlight = backlight_at(&root, 255);
+    std::fs::write(root.join("in_intensity0_raw"), "1500\n").expect("sensor at full scale");
+    let (manager, _rig) = polling_manager_at(&root).await;
+    assert!(
+      settles_at(&backlight, 255).await,
+      "a bright room asks for full brightness: {}",
+      panel(&backlight)
+    );
+
+    manager.set_screen(Screen::Dim(0.5)).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 128).await,
+      "half of what the sensor asks for: {}",
+      panel(&backlight)
+    );
+
+    std::fs::write(root.join("in_intensity0_raw"), "0\n").expect("sensor in the dark");
+    assert!(
+      settles_at(&backlight, 8).await,
+      "half of the dark room floor, not half of the old reading: {}",
+      panel(&backlight)
+    );
+
+    manager.set_screen(Screen::Full).await.expect("screen");
+    assert!(
+      settles_at(&backlight, 16).await,
+      "the dark room floor on waking: {}",
+      panel(&backlight)
+    );
   }
 }

@@ -56,8 +56,8 @@ use player::Player;
 // don't pub anything else from core so that dead code lints still work
 pub use state::{AppState, State};
 use state::{
-  AudioManager, DeviceStore, KvStore, MetaStore, RouteTable, StateAssembly, TelephonyManager, TimeManager, WebappBlobs,
-  WebappRegistry,
+  AudioManager, DeviceStore, KvStore, MetaStore, PresenceManager, RouteTable, StateAssembly, TelephonyManager,
+  TimeManager, WebappBlobs, WebappRegistry,
 };
 pub use systemd::power::{ResetRig, ResetSupport, RigError};
 use systemd::{
@@ -69,6 +69,7 @@ use transfer::ChunkedTransfer;
 use transport::TransportController;
 
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
+const PRESENCE_SETTINGS_FILE: &str = "presence.json";
 
 pub struct Daemon {
   pub state: State,
@@ -214,6 +215,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
   let geo_watchers = state::GeoWatchers::new();
   let geo_last_fix = state::GeoLastFix::new();
   let tunnel_routes = state::TunnelRoutes::new();
+  let notification_origins = state::NotificationOrigins::new();
 
   let authority = AuthorityRegistry::new();
   let capabilities = CapabilitiesRegistry::new(bus.clone(), authority.clone());
@@ -249,6 +251,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     ws_routes.clone(),
     stream_routes.clone(),
     tunnel_routes.clone(),
+    notification_origins.clone(),
     log_tap.clone(),
   );
 
@@ -271,9 +274,24 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     .await
     .expect("failed to initialize ALS manager")
     .spawn();
-  let (mic, mic_handle) = MicManager::init(bus.clone(), bluetooth.clone(), MicConfig::default())
-    .await
-    .spawn();
+  let (presence, presence_handle) = PresenceManager::init(
+    bus.clone(),
+    als.clone(),
+    config
+      .state_dir
+      .clone()
+      .unwrap_or_else(paths::state_dir)
+      .join(PRESENCE_SETTINGS_FILE),
+  );
+  let (mic, mic_handle) = MicManager::init(
+    bus.clone(),
+    bluetooth.clone(),
+    capabilities.clone(),
+    peers.watch_snapshot(),
+    MicConfig::default(),
+  )
+  .await
+  .spawn();
   let transfer_sinks = transfer::sinks::TransferSinks::default();
 
   let range_proxy_handle = RangeProxy::spawn(
@@ -359,6 +377,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     time,
     audio,
     als,
+    presence,
     mic,
     devices,
     kv,
@@ -366,6 +385,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     stream_routes,
     geo_watchers,
     geo_last_fix,
+    notification_origins,
     log_tap,
     tunnel_routes,
     transfer_sinks,
@@ -374,6 +394,7 @@ pub async fn init(config: DaemonConfig) -> Daemon {
     asset_cache_handle,
     transfer_handle,
     als_handle,
+    presence_handle,
     mic_handle,
   });
 
@@ -402,14 +423,13 @@ pub async fn init(config: DaemonConfig) -> Daemon {
   spawn_next_art_warmer(state.clone(), bluetooth.clone());
   spawn_stock_preset_repair(state.clone(), bluetooth.clone());
   spawn_primary_companion_resync(state.authority.clone(), bluetooth.clone());
+  tokio::spawn(handler::client::geo::hold_watch(
+    state.clone(),
+    bluetooth.gateway_man.clone(),
+  ));
   spawn_asset_event_forwarder(state.assets.subscribe(), state.bus.clone());
 
-  let transport = TransportController::new(
-    state.authority.clone(),
-    state.player.clone(),
-    bluetooth.clone(),
-    bluetooth.iap2.transport.clone(),
-  );
+  let transport = TransportController::new(&state, bluetooth.clone());
 
   notifier.status("starting servers...");
   let proxy_listener = proxy::bind(config.proxy_bind).await;

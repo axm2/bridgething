@@ -28,7 +28,9 @@ mod geo_watchers;
 pub mod log_tap;
 mod lyrics;
 pub mod meta;
+mod notification_origins;
 mod playback_targets;
+mod presence;
 mod root_browse;
 pub mod routes;
 pub mod storage;
@@ -40,10 +42,12 @@ mod webapps;
 pub use audio::{AudioError, AudioManager};
 pub use blobs::WebappBlobs;
 pub use browse_content::BrowseContentCache;
-pub use geo_watchers::{GeoLastFix, GeoWatchers, WatchAggregate, WatchChange};
+pub use geo_watchers::{GeoHandover, GeoLastFix, GeoLease, GeoWatchers};
 pub use log_tap::{LogTap, LogTapLayer};
 pub use lyrics::LyricsCache;
+pub use notification_origins::NotificationOrigins;
 pub use playback_targets::{PlaybackTargetError, PlaybackTargetStore};
+pub use presence::PresenceManager;
 pub use root_browse::RootBrowseCache;
 pub use routes::RouteTable;
 pub use storage::{DeviceStore, KvStore, MetaStore, SlotsReleased};
@@ -77,6 +81,7 @@ pub struct AppState {
   pub time: TimeManager,
   pub audio: AudioManager,
   pub als: AlsManager,
+  pub presence: PresenceManager,
   pub mic: MicManager,
   pub devices: DeviceStore,
   pub kv: KvStore,
@@ -84,6 +89,7 @@ pub struct AppState {
   pub stream_routes: RouteTable,
   pub geo_watchers: GeoWatchers,
   pub geo_last_fix: GeoLastFix,
+  pub notification_origins: NotificationOrigins,
   pub log_tap: LogTap,
   pub tunnel_routes: TunnelRoutes,
   pub playback_targets: PlaybackTargetStore,
@@ -100,6 +106,7 @@ pub struct AppState {
   _asset_cache_handle: JoinHandle<()>,
   _transfer_handle: JoinHandle<()>,
   _als_handle: JoinHandle<()>,
+  _presence_handle: JoinHandle<()>,
   _mic_handle: JoinHandle<()>,
 }
 
@@ -125,6 +132,7 @@ impl AppState {
       time,
       audio,
       als,
+      presence,
       mic,
       devices,
       kv,
@@ -132,6 +140,7 @@ impl AppState {
       stream_routes,
       geo_watchers,
       geo_last_fix,
+      notification_origins,
       log_tap,
       tunnel_routes,
       playback_targets,
@@ -141,6 +150,7 @@ impl AppState {
       asset_cache_handle,
       transfer_handle,
       als_handle,
+      presence_handle,
       mic_handle,
     } = parts;
     Arc::new(Self {
@@ -162,6 +172,7 @@ impl AppState {
       time,
       audio,
       als,
+      presence,
       mic,
       devices,
       kv,
@@ -169,6 +180,7 @@ impl AppState {
       stream_routes,
       geo_watchers,
       geo_last_fix,
+      notification_origins,
       log_tap,
       tunnel_routes,
       playback_targets,
@@ -183,6 +195,7 @@ impl AppState {
       _asset_cache_handle: asset_cache_handle,
       _transfer_handle: transfer_handle,
       _als_handle: als_handle,
+      _presence_handle: presence_handle,
       _mic_handle: mic_handle,
     })
   }
@@ -353,6 +366,7 @@ pub struct StateAssembly {
   pub time: TimeManager,
   pub audio: AudioManager,
   pub als: AlsManager,
+  pub presence: PresenceManager,
   pub mic: MicManager,
   pub devices: DeviceStore,
   pub kv: KvStore,
@@ -360,6 +374,7 @@ pub struct StateAssembly {
   pub stream_routes: RouteTable,
   pub geo_watchers: GeoWatchers,
   pub geo_last_fix: GeoLastFix,
+  pub notification_origins: NotificationOrigins,
   pub log_tap: LogTap,
   pub tunnel_routes: TunnelRoutes,
   pub playback_targets: PlaybackTargetStore,
@@ -369,6 +384,7 @@ pub struct StateAssembly {
   pub asset_cache_handle: JoinHandle<()>,
   pub transfer_handle: JoinHandle<()>,
   pub als_handle: JoinHandle<()>,
+  pub presence_handle: JoinHandle<()>,
   pub mic_handle: JoinHandle<()>,
 }
 

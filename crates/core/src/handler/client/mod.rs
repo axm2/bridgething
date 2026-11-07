@@ -5,7 +5,7 @@ mod bluetooth;
 mod capabilities;
 mod config;
 mod doc;
-mod geo;
+pub(crate) mod geo;
 mod hardware;
 mod library;
 mod lyrics;
@@ -13,6 +13,7 @@ mod net;
 mod notifications;
 mod phone;
 mod player;
+mod presence;
 mod stock;
 mod store;
 mod system;
@@ -36,6 +37,7 @@ use net::*;
 use notifications::*;
 use phone::*;
 use player::*;
+use presence::*;
 use stock::*;
 use store::*;
 use system::*;
@@ -159,6 +161,12 @@ impl ClientHandler {
           move |h| async move { msg.dispatch(&SystemHandler::new(h)).await },
         );
       }
+      RecvMsgData::Presence(msg) => {
+        dispatch(
+          handle,
+          move |h| async move { msg.dispatch(&PresenceHandler::new(h)).await },
+        );
+      }
       RecvMsgData::Time(msg) => {
         dispatch(handle, move |h| async move { msg.dispatch(&TimeHandler::new(h)).await });
       }
@@ -223,7 +231,7 @@ impl ClientHandler {
           reason
         );
         net::cleanup_owner_routes(&handle).await;
-        geo::cleanup_owner_watchers(&handle).await;
+        geo::cleanup_owner_watchers(&handle);
         handle
           .state
           .log_tap

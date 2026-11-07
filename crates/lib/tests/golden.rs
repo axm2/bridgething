@@ -211,6 +211,7 @@ fn gateway_capabilities() -> GatewayCapabilities {
       lyrics: true,
       playback_targets: true,
       forward: false,
+      voice: true,
     },
     audio: AudioCapabilities {
       earcons: vec![],
@@ -641,6 +642,34 @@ fn build_fixtures() -> Vec<(GoldenFixture, Vec<u8>)> {
       meta: GatewayMsgMeta::Event,
       data: GatewayToBridgeMsgData::Authority(GatewayToBridgeAuthorityMsg::Release(AuthorityRelease {
         scope: CompanionAuthorityScope::NowPlayingPlayback,
+      })),
+    },
+  ));
+
+  out.push(gateway_fixture(
+    "gateway_to_bridge/presence-update-heartbeat",
+    "host reports its display is dimmed and promises another report within ten seconds",
+    GatewayToBridgeMsg {
+      id: id(),
+      meta: GatewayMsgMeta::Event,
+      data: GatewayToBridgeMsgData::Presence(GatewayToBridgePresenceMsg::Update(HostPresence {
+        display: DisplayState::Dim,
+        idle_s: Some(312),
+        heartbeat_s: Some(10),
+      })),
+    },
+  ));
+
+  out.push(gateway_fixture(
+    "gateway_to_bridge/presence-update-release",
+    "host hands the screen back to the device with a report that never expires",
+    GatewayToBridgeMsg {
+      id: id(),
+      meta: GatewayMsgMeta::Event,
+      data: GatewayToBridgeMsgData::Presence(GatewayToBridgePresenceMsg::Update(HostPresence {
+        display: DisplayState::Active,
+        idle_s: None,
+        heartbeat_s: None,
       })),
     },
   ));
